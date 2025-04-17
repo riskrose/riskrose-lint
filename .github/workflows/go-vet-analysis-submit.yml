@@ -1,0 +1,75 @@
+name: Submit Repositories
+
+# 问了claude的
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: |
+          Can be 'top.txt' or 'awesome.txt', or some 'https://xxx' download link.
+          Default 'repo.txt'.
+        default: "repo.txt"
+      count:
+        description: |
+          Total submit repo count.
+          Default '1000'.
+        default: "1000"
+      workflow:
+        description: |
+          The workflow to submit with each repo.
+          Default 'go-vet-analysis.yml'.
+        default: "go-vet-analysis.yml"
+      delay:
+        description: |
+          Base delay in seconds between submissions.
+          Default '30'.
+        default: "30"
+
+permissions:
+  actions: write
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Read repository URLs
+        id: read_repos
+        run: |
+          echo "REPO_URLS<<EOF" >> $GITHUB_ENV
+          while IFS= read -r line; do
+            echo "$line" >> $GITHUB_ENV
+          done < ${{ inputs.source }}
+          echo "EOF" >> $GITHUB_ENV
+      
+      - name: Submit each repo to go-vet-analysis with delay
+        run: |
+          IFS=$'\n' # Set the Internal Field Separator to newline
+          count=0
+          max_count=${{ inputs.count }}
+          base_delay=${{ inputs.delay }}
+          
+          for url in $REPO_URLS; do
+            if [ $count -ge $max_count ]; then
+              echo "Reached maximum count of $max_count submissions"
+              break
+            fi
+            
+            echo "Submitting repository ($((count+1))/$max_count): $url"
+            gh workflow run ${{ inputs.workflow }} --ref main --field repo_url=$url
+            
+            # Calculate delay with some randomness to avoid pattern detection
+            random_delay=$(( $RANDOM % 15 ))
+            total_delay=$(( $base_delay + $random_delay ))
+            
+            echo "Waiting for $total_delay seconds before next submission..."
+            sleep $total_delay
+            
+            count=$((count+1))
+          done

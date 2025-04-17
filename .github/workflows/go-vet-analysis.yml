@@ -1,0 +1,113 @@
+name: Go Vet Analysis-20250416
+run-name: "run for ${{ inputs.repo_url }}"
+
+on:
+  workflow_dispatch: # 手动触发
+    inputs:
+      repo_url:
+        description: "The repository URL to analyze"
+        required: true
+
+permissions:  # 需要写入 issue 的权限
+  issues: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v3
+      
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+      
+      # 新增 gci 安装步骤
+      - name: Install go-critic
+        run: go install github.com/daixiang0/gci@latest
+
+      - name: Add Go binaries to PATH
+        run: |
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+        shell: bash
+      
+      - name: Debug environment
+        run: |
+          echo "Current shell: $SHELL"
+          echo "Current PATH: $PATH"
+          which mkdir
+        shell: bash
+      
+      - name: Analyze the repository
+        run: |
+          repo="${{ inputs.repo_url }}"
+          echo "Processing repository: $repo"
+          repo_name=$(basename -s .git "$repo")
+          
+          mkdir -p repos
+          cd repos
+          git clone "$repo" "$repo_name"
+          cd "$repo_name"
+          
+          # 第一次记录（分析前）
+          echo "仓库大小（分析前）: $(du -sh)" > ../../repo-size-before.txt
+          
+          # 运行 go vet 并过滤 downloading 关键字
+          go vet ./... > ../../go-vet-report.txt 2> >(grep -v 'downloading' > ../../go-vet-errors.txt) || true
+          
+          # 新增 gci 检测
+          gci write ./... > ../../gci-report.txt 2>&1 || true
+          
+          # 第二次记录（分析后）
+          echo "仓库大小（分析后）: $(du -sh)" > ../../repo-size-after.txt
+          
+          cd ..
+          rm -rf "$repo_name"
+      
+      - name: Collect analysis reports
+        run: |
+          repo_name=$(basename -s .git "${{ inputs.repo_url }}")
+          
+          # 读取两次大小记录
+          SIZE_BEFORE=$(cat repo-size-before.txt 2>/dev/null || echo "未获取到分析前大小")
+          SIZE_AFTER=$(cat repo-size-after.txt 2>/dev/null || echo "未获取到分析后大小")
+          
+          # 读取报告和错误
+          REPORTS=$(cat go-vet-report.txt 2>/dev/null || echo "没有生成报告")
+          ERRORS=$(cat go-vet-errors.txt 2>/dev/null || echo "没有错误")
+          
+          # 将信息设置为输出变量
+          echo "repo_size<<EOF" >> $GITHUB_ENV
+          echo -e "### 仓库大小\n- 分析前: ${SIZE_BEFORE#仓库大小（分析前）: }\n- 分析后: ${SIZE_AFTER#仓库大小（分析后）: }" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+          echo "reports<<EOF" >> $GITHUB_ENV
+          echo -e "### $repo_name 报告:\n<details>\n<summary>点击展开详细报告</summary>\n### Go Vet 结果:\n\`\`\`\n$REPORTS\n\`\`\`\n\n### GCI 代码规范检测:\n\`\`\`\n$GCI_REPORT\n\`\`\`\n</details>" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+          echo "errors<<EOF" >> $GITHUB_ENV
+          echo -e "### 关键错误:\n\`\`\`\n$ERRORS\n\`\`\`" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+        shell: bash
+      
+      - name: Create or update issue with analysis results
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: 1
+          body: |
+            # Go Vet 静态分析报告
+            
+            ## 项目路径
+            ${{ inputs.repo_url }}
+            
+            ## 仓库大小
+            ${{ env.repo_size }}
+            
+            ## 分析错误
+            ${{ env.errors }}
+            
+            ## 详细报告
+            ${{ env.reports }}
